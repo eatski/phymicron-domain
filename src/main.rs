@@ -1,22 +1,25 @@
 use std::collections::HashMap;
-use std::io::{repeat, stdout, Error, Write};
+use std::io::{stdout, Error, Write};
 use std::{thread, time};
 
 use rand::{thread_rng, Rng};
+use termion::color;
 
-const SIZE: usize = 32;
+const SIZE: i32 = 32;
 
 #[derive(Clone)]
-pub struct Micron;
+pub struct Micron {
+    pub color: usize,
+}
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Clone, Hash)]
 pub struct Point {
-    x: usize,
-    y: usize,
+    x: i32,
+    y: i32,
 }
 
 impl Point {
-    pub fn move_simple(&self, dir: &Direction, num: usize) -> Self {
+    pub fn move_simple(&self, dir: &Direction, num: i32) -> Self {
         match dir {
             Direction::Up => Self {
                 x: self.x,
@@ -54,14 +57,32 @@ impl Direction {
 fn next(world: &mut World) {
     let dirs: Vec<_> = Direction::all().collect();
     let mut rng = thread_rng();
-    let (micron, point) = pick(&mut world.objects, &mut rng);
-    let dir = choose(&dirs, &mut rng);
-    let new_one = (micron.clone(), point.move_simple(dir, 1));
-    for (_, point) in world.objects.iter_mut() {
-        let dir = choose(&dirs, &mut rng);
-        *point = point.move_simple(dir, 1);
+
+    let moves: Vec<_> = world
+        .objects
+        .keys()
+        .map(|point| {
+            let dir = choose(&dirs, &mut rng);
+            let next_point = point.move_simple(dir, 1);
+            (point.clone(), next_point)
+        })
+        .collect();
+    for (cur, next) in moves.iter() {
+        let micron = world.objects.remove(cur);
+        if moves.iter().filter(|(_, point)| point == next).count() == 1 && world.valid(next) {
+            world.objects.insert(next.clone(), micron.unwrap());
+        }
     }
-    world.objects.push(new_one);
+    for color in [0,1] {
+        let (point, micron) = pick(&mut world.objects.iter().filter(|(_,p)| p.color == color).collect(), &mut rng);
+        let dir = choose(&dirs, &mut rng);
+        let new_point = point.move_simple(dir, 1);
+        if world.valid(&new_point) {
+            let micron = micron.clone();
+            world.objects.insert(new_point, micron);
+        }
+    }
+    
 }
 
 fn choose<'a, T, R: Rng>(vec: &'a Vec<T>, rng: &mut R) -> &'a T {
@@ -72,41 +93,67 @@ fn pick<T, R: Rng>(vec: &mut Vec<T>, rng: &mut R) -> T {
     let index = rng.gen_range(0..vec.len());
     vec.remove(index)
 }
-
-fn choose_mut<'a, T, R: Rng>(vec: &'a mut Vec<T>, rng: &mut R) -> &'a mut T {
-    let len = vec.len();
-    vec.get_mut(rng.gen_range(0..len)).expect("NEVER")
+pub struct World {
+    pub objects: HashMap<Point, Micron>,
 }
 
-pub struct World {
-    pub objects: Vec<(Micron, Point)>,
+impl World {
+    pub fn valid(&self, point: &Point) -> bool {
+        point.x >= 0 && point.x < SIZE && point.y >= 0 && point.y < SIZE
+    }
+}
+
+fn visualize(mic: &Micron) -> String {
+    match mic.color {
+        0 => format!("{}●{} ", color::Fg(color::Red), color::Fg(color::Reset)),
+        1 => format!("{}●{} ", color::Fg(color::Blue), color::Fg(color::Reset)),
+        2 => format!(
+            "{}●{} ",
+            color::Fg(color::LightGreen),
+            color::Fg(color::Reset)
+        ),
+        _ => panic!(),
+    }
+}
+
+fn to_string(world: &World) -> String {
+    (0..SIZE)
+        .map(|y| {
+            (0..SIZE)
+                .map(|x| {
+                    let found = world.objects.get(&Point {
+                        x: x.try_into().unwrap(),
+                        y: y.try_into().unwrap(),
+                    });
+                    found
+                        .and_then(|mic| Some(visualize(mic)))
+                        .unwrap_or_else(|| "  ".to_string())
+                })
+                .chain(["\n".to_string()])
+                .collect::<String>()
+        })
+        .collect()
 }
 
 fn main() -> Result<(), Error> {
     let mut world = World {
-        objects: vec![(Micron, Point { x: 15, y: 15 })],
+        objects: [
+            (Point { x: 10, y: 10 }, Micron { color: 0 }),
+            (Point { x: 22, y: 22 }, Micron { color: 1 }),
+        ]
+        .into(),
     };
     let mut stdout = stdout();
 
-    for i in 0..100 {
-        thread::sleep(time::Duration::from_millis(100));
-        let str: String = (0..SIZE).map(|y| {
-            (0..SIZE).map(|x| {
-                let found = world
-                    .objects
-                    .iter()
-                    .find(|(_, point)| point == &Point { x, y });
-                found.and_then(|_| Some("●")).unwrap_or_else(|| " ")
-            }).chain(["\n"]) .collect::<String>()
-        }).collect();
+    for _ in 0..100 {
+        thread::sleep(time::Duration::from_millis(1000));
         write!(
             stdout,
             "{}{}{}",
             termion::clear::All,
             termion::cursor::Goto(1, 1),
-            str
+            to_string(&world)
         )?;
-        stdout.flush()?;
         next(&mut world);
     }
     Ok(())
